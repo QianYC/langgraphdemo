@@ -5,6 +5,9 @@ from langgraph.prebuilt import ToolNode
 from langchain_core.tools import tool, Tool
 from langchain_community.utilities import GoogleSerperAPIWrapper
 from langchain.callbacks.tracers import LangChainTracer
+from langchain_core.prompts import PromptTemplate
+from langchain_core.messages import HumanMessage
+from langgraph.checkpoint.memory import MemorySaver
 
 from typing import Annotated
 from typing_extensions import TypedDict
@@ -77,14 +80,24 @@ class State(TypedDict):
 def process(state: State):
     print("---process---")
     messages = state["messages"]
-    pprint.pp(messages)
+    # pprint.pp(messages)
     response = llm_with_tools.invoke(messages, config=llm_config)
     pprint.pp(response)
     return {"messages": [response]}
 
 def rewrite(state: State):
     print("---rewrite---")
-    return {}
+    user_input = [msg for msg in state["messages"] if isinstance(msg, HumanMessage)][-1].content
+    prompt = PromptTemplate(
+        template="""Given the user's original input, please try to reason about the underlying semantic intent / meaning, and formulate a more concise input.\n
+        Origin user's input: {user_input}\n
+        Improved user's input:""",
+        input_variables=["user_input"]
+    )
+    chain = prompt | llm_with_tools
+    response = chain.invoke({"user_input": user_input}, config=llm_config)
+    pprint.pp(response)
+    return {"messages": [response]}
 
 def need_call_tools(state: State):
     print("---need_call_tools---")
@@ -116,15 +129,20 @@ builder.add_conditional_edges("process", need_call_tools)
 builder.add_conditional_edges("tools", is_output_good_enough)
 builder.add_edge("rewrite", "process")
 graph = builder.compile()
+# enable memory:
+# graph = builder.compile(checkpointer=MemorySaver())
 
-graph.invoke(
-    {
-        "messages": [
-            {
-                "role": "user",
-                "content": "Whats the weather like today in Suzhou?"
-            }
-        ]
-    },
-    config=llm_config
-)
+# run the agent.
+while True:
+    user_input = input("User: ")
+    if user_input.lower() in ["q", "quit", "exit"]:
+        print("Bye")
+        break
+    else:
+        # for output in graph.stream({"messages": [{"role": "user", "content": user_input}]}, config=llm_config, stream_mode=None):
+        #     for key, value in output.items():
+        #         pprint.pprint(f"Output from node '{key}':")
+        #         pprint.pprint("---")
+        #         pprint.pprint(value, indent=2, width=80, depth=None)
+        #     pprint.pprint("---")
+        graph.invoke({"messages": [{"role": "user", "content": user_input}]}, config=llm_config)
